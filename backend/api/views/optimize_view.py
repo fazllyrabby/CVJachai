@@ -67,8 +67,9 @@ class ResumeOptimizeAPIView(APIView):
             recommendation = groq_optimizer.recommend(resume_text, job_description)
 
             if not optimized_content:
+                logger.error("Groq optimize returned None. available=%s, model=%s", groq_base.available, groq_base.optimizer_model)
                 return Response(
-                    {"error": "Failed to generate optimized content from AI."},
+                    {"error": f"Failed to generate optimized content from AI. Engine available: {groq_base.available}, Model: {groq_base.optimizer_model}"},
                     status=HTTP_500_INTERNAL_SERVER_ERROR
                 )
 

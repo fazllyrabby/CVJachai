@@ -21,7 +21,11 @@ class GroqClient:
 
         if self.api_key:
             try:
-                self.client = Groq(api_key=self.api_key)
+                self.client = Groq(
+                    api_key=self.api_key,
+                    max_retries=5,
+                    timeout=120.0
+                )
                 self._available = True
                 self._discover_models()
             except Exception as e:
@@ -63,27 +67,44 @@ class GroqClient:
     def available(self):
         return self._available and self.client is not None
 
+    # Fallback model if primary fails (rate limit, unavailable, etc.)
+    FALLBACK_MODELS = ["llama-3.3-70b-versatile", "llama3-70b-8192", "llama3-8b-8192"]
+
     def call(self, system_prompt, user_prompt, model, temperature=0.0, json_mode=False):
-        """Centralized API call handler."""
-        if not self.available: return None
-        try:
-            kwargs = {
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                "model": model,
-                "temperature": temperature,
-                "seed": 42
-            }
-            if json_mode:
-                kwargs["response_format"] = {"type": "json_object"}
-            
-            response = self.client.chat.completions.create(**kwargs)
-            return response.choices[0].message.content
-        except Exception as e:
-            logger.error(f"Groq API Error: {e}")
+        """Centralized API call handler with fallback models."""
+        if not self.available:
+            logger.error("Groq client not available. API key may be missing or invalid.")
             return None
+
+        # Try primary model first, then fallbacks
+        models_to_try = [model] + [m for m in self.FALLBACK_MODELS if m != model]
+
+        for attempt_model in models_to_try:
+            try:
+                kwargs = {
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    "model": attempt_model,
+                    "temperature": temperature,
+                    "seed": 42
+                }
+                if json_mode:
+                    kwargs["response_format"] = {"type": "json_object"}
+                
+                response = self.client.chat.completions.create(**kwargs)
+                content = response.choices[0].message.content
+                if content:
+                    if attempt_model != model:
+                        logger.info(f"Groq: succeeded with fallback model {attempt_model}")
+                    return content
+            except Exception as e:
+                logger.error(f"Groq API Error with model '{attempt_model}': {e}")
+                continue
+
+        logger.error("Groq: all models failed.")
+        return None
 
     def call_vision(self, user_prompt, base64_image, model=None):
         """Call Groq Vision model with an image."""
