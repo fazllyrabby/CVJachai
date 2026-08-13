@@ -1,6 +1,7 @@
 import os
 import logging
-from groq import Groq
+import requests
+import json
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -20,21 +21,21 @@ class GroqClient:
         self._available = False
 
         if self.api_key:
-            try:
-                self.client = Groq(
-                    api_key=self.api_key,
-                    max_retries=5,
-                    timeout=120.0
-                )
-                self._available = True
-                self._discover_models()
-            except Exception as e:
-                logger.error(f"Groq Client Init Error: {e}")
+            self._available = True
+            self._discover_models()
+        else:
+            logger.error("Groq API key is missing.")
 
     def _discover_models(self):
-        """Find best available models on Groq - always prefer newest."""
+        """Find best available models on Groq via REST API."""
         try:
-            models = [m.id for m in self.client.models.list().data]
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            response = requests.get("https://api.groq.com/openai/v1/models", headers=headers, timeout=10)
+            response.raise_for_status()
+            models = [m["id"] for m in response.json()["data"]]
 
             # Priority: gpt-oss-120b > llama-4 > llama-3.3-70b
             def best_text_model(candidates):
@@ -65,7 +66,7 @@ class GroqClient:
 
     @property
     def available(self):
-        return self._available and self.client is not None
+        return self._available
 
     # Fallback model if primary fails (rate limit, unavailable, etc.)
     FALLBACK_MODELS = ["llama-3.3-70b-versatile", "llama3-70b-8192", "llama3-8b-8192"]
@@ -81,7 +82,11 @@ class GroqClient:
 
         for attempt_model in models_to_try:
             try:
-                kwargs = {
+                headers = {
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json"
+                }
+                payload = {
                     "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt}
@@ -91,10 +96,17 @@ class GroqClient:
                     "seed": 42
                 }
                 if json_mode:
-                    kwargs["response_format"] = {"type": "json_object"}
+                    payload["response_format"] = {"type": "json_object"}
                 
-                response = self.client.chat.completions.create(**kwargs)
-                content = response.choices[0].message.content
+                response = requests.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=60
+                )
+                response.raise_for_status()
+                content = response.json()["choices"][0]["message"]["content"]
+                
                 if content:
                     if attempt_model != model:
                         logger.info(f"Groq: succeeded with fallback model {attempt_model}")
@@ -111,8 +123,12 @@ class GroqClient:
         if not self.available: return None
         try:
             target_model = model or self.vision_model
-            response = self.client.chat.completions.create(
-                messages=[
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "messages": [
                     {
                         "role": "user",
                         "content": [
@@ -126,10 +142,18 @@ class GroqClient:
                         ]
                     }
                 ],
-                model=target_model,
-                temperature=0.1
+                "model": target_model,
+                "temperature": 0.1
+            }
+            
+            response = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=60
             )
-            return response.choices[0].message.content
+            response.raise_for_status()
+            return response.json()["choices"][0]["message"]["content"]
         except Exception as e:
             logger.error(f"Groq Vision Error: {e}")
             return None
